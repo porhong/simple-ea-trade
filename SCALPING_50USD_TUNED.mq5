@@ -197,14 +197,14 @@ void ShowAccountWarning()
    
    if(balance < 50.0 && InpShowAccountWarnings)
    {
-      DebugLog("⚠️ Account balance ($" + DoubleToString(balance, 2) + ") is below $50.");
+      DebugLog("[WARN] Account balance ($" + DoubleToString(balance, 2) + ") is below $50.");
    }
    
    if(balance >= 50.0 && balance < 100.0 && InpShowAccountWarnings)
    {
-      DebugLog("✓ Account balance ($" + DoubleToString(balance, 2) + ") suitable for $50 strategy.");
-      DebugLog("📊 Recommended: 0.02 lots per trade, max 0.03");
-      DebugLog("🛡️ Daily limit: Stop at $5 loss or $10 profit");
+      DebugLog("[OK] Account balance ($" + DoubleToString(balance, 2) + ") suitable for $50 strategy.");
+      DebugLog("[INFO] Recommended: 0.02 lots per trade, max 0.03");
+      DebugLog("[INFO] Daily limit: Stop at $5 loss or $10 profit");
    }
 }
 
@@ -215,18 +215,18 @@ void ResetDailyCountersIfNeeded()
    {
       if(g_todayDoy != -1 && InpShowDailyStats)
       {
-         DebugLog("╔════════════ DAILY SUMMARY ════════════╗");
-         DebugLog("║ Total Trades: " + IntegerToString(g_tradesToday));
-         DebugLog("║ Wins: " + IntegerToString(g_winsToday) + " | Losses: " + IntegerToString(g_lossesToday));
+         DebugLog("========== DAILY SUMMARY ==========");
+         DebugLog("Total Trades: " + IntegerToString(g_tradesToday));
+         DebugLog("Wins: " + IntegerToString(g_winsToday) + " | Losses: " + IntegerToString(g_lossesToday));
          if(g_tradesToday > 0)
          {
             double winRate = (double)g_winsToday / (double)g_tradesToday * 100.0;
-            DebugLog("║ Win Rate: " + DoubleToString(winRate, 1) + "%");
+            DebugLog("Win Rate: " + DoubleToString(winRate, 1) + "%");
          }
-         DebugLog("║ Daily P&L: $" + DoubleToString(g_profitToday, 2));
+         DebugLog("Daily P&L: $" + DoubleToString(g_profitToday, 2));
          double balance = AccountInfoDouble(ACCOUNT_BALANCE);
-         DebugLog("║ Account Balance: $" + DoubleToString(balance, 2));
-         DebugLog("╚═══════════════════════════════════════╝");
+         DebugLog("Account Balance: $" + DoubleToString(balance, 2));
+         DebugLog("===================================");
       }
       
       g_todayDoy = doy;
@@ -250,6 +250,10 @@ void UpdateDailyStats()
    g_lossesToday = 0;
    g_profitToday = 0.0;
    
+   // Use a simple array to track processed position IDs (max 100 positions per day)
+   ulong processedPositions[100];
+   int processedCount = 0;
+   
    HistorySelect(todayStart, TimeCurrent());
    int total = HistoryDealsTotal();
    
@@ -260,17 +264,59 @@ void UpdateDailyStats()
       
       if(HistoryDealGetString(ticket, DEAL_SYMBOL) != _Symbol) continue;
       if(HistoryDealGetInteger(ticket, DEAL_MAGIC) != InpMagic) continue;
+      
+      // Only count OUT deals (closes)
       if(HistoryDealGetInteger(ticket, DEAL_ENTRY) != DEAL_ENTRY_OUT) continue;
       
+      // Get position ID for this deal
+      ulong positionID = HistoryDealGetInteger(ticket, DEAL_POSITION_ID);
+      
+      // Add profit to daily total (all deals contribute to P&L)
       double profit = HistoryDealGetDouble(ticket, DEAL_PROFIT);
       double commission = HistoryDealGetDouble(ticket, DEAL_COMMISSION);
       double swap = HistoryDealGetDouble(ticket, DEAL_SWAP);
-      
       double netProfit = profit + commission + swap;
       g_profitToday += netProfit;
       
-      if(netProfit > 0.01) g_winsToday++;
-      else if(netProfit < -0.01) g_lossesToday++;
+      // Check if we already counted this position
+      bool alreadyCounted = false;
+      for(int j = 0; j < processedCount; j++)
+      {
+         if(processedPositions[j] == positionID)
+         {
+            alreadyCounted = true;
+            break;
+         }
+      }
+      
+      if(alreadyCounted) continue;
+      
+      // This is a new position - count it as win or loss
+      // Need to calculate total profit for entire position
+      double totalPositionProfit = 0;
+      for(int k = 0; k < total; k++)
+      {
+         ulong checkTicket = HistoryDealGetTicket(k);
+         if(checkTicket == 0) continue;
+         if(HistoryDealGetInteger(checkTicket, DEAL_POSITION_ID) != positionID) continue;
+         if(HistoryDealGetString(checkTicket, DEAL_SYMBOL) != _Symbol) continue;
+         if(HistoryDealGetInteger(checkTicket, DEAL_MAGIC) != InpMagic) continue;
+         
+         totalPositionProfit += HistoryDealGetDouble(checkTicket, DEAL_PROFIT);
+         totalPositionProfit += HistoryDealGetDouble(checkTicket, DEAL_COMMISSION);
+         totalPositionProfit += HistoryDealGetDouble(checkTicket, DEAL_SWAP);
+      }
+      
+      // Mark position as processed
+      if(processedCount < 100)
+      {
+         processedPositions[processedCount] = positionID;
+         processedCount++;
+      }
+      
+      // Count as win or loss based on total position profit
+      if(totalPositionProfit > 0.01) g_winsToday++;
+      else if(totalPositionProfit < -0.01) g_lossesToday++;
    }
 }
 
@@ -465,7 +511,7 @@ void UpdateSessionStatus()
    else
    {
       g_isTradeAllowed = true;
-      g_sessionStatus = "✓ TRADING ACTIVE";
+      g_sessionStatus = "[ACTIVE] TRADING ENABLED";
    }
    
    g_currentSession = sessionName;
@@ -490,24 +536,20 @@ void DisplayStatus()
    string status = "";
    
    // Header
-   status += "╔══════════════════════════════════════════════════════════╗\n";
-   status += "║         $50 SCALPER v5.00 - TUNED EDITION               ║\n";
-   status += "║         RELAXED SIGNALS - MORE OPPORTUNITIES            ║\n";
-   status += "╠══════════════════════════════════════════════════════════╣\n";
+   status += "========================================\n";
+   status += "     $50 SCALPER v5.00 - TUNED         \n";
+   status += "     RELAXED SIGNALS EDITION           \n";
+   status += "========================================\n";
    
    // Session Status
-   string sessionLine = "║ SESSION: " + g_currentSession;
-   while(StringLen(sessionLine) < 58) sessionLine += " ";
-   sessionLine += "║\n";
-   status += sessionLine;
+   string sessionLine = "SESSION: " + g_currentSession;
+   status += sessionLine + "\n";
    
-   string statusLine = "║ STATUS:  " + g_sessionStatus;
-   while(StringLen(statusLine) < 58) statusLine += " ";
-   statusLine += "║\n";
-   status += statusLine;
+   string statusLine = "STATUS:  " + g_sessionStatus;
+   status += statusLine + "\n";
    
    // Trade Allowed Indicator
-   string tradeLine = "║ TRADING: " + (g_isTradeAllowed ? "✓ ENABLED" : "✗ DISABLED");
+   string tradeLine = "TRADING: " + (g_isTradeAllowed ? "[ON] ENABLED" : "[OFF] DISABLED");
    if(!g_isTradeAllowed && g_nextSession != "")
    {
       int minsToNext = (int)((g_nextSessionTime - now) / 60);
@@ -516,49 +558,38 @@ void DisplayStatus()
       else
          tradeLine += " (Next: " + g_nextSession + ")";
    }
-   while(StringLen(tradeLine) < 58) tradeLine += " ";
-   tradeLine += "║\n";
-   status += tradeLine;
-   
-   status += "╠══════════════════════════════════════════════════════════╣\n";
+   status += tradeLine + "\n";
+   status += "----------------------------------------\n";
    
    // Market Info
    int spread = (int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    
-   string priceLine = "║ PRICE: " + DoubleToString(bid, 2) + " | SPREAD: " + IntegerToString(spread) + " pts";
-   if(spread > InpMaxSpreadPoints) priceLine += " ⚠ HIGH";
-   while(StringLen(priceLine) < 58) priceLine += " ";
-   priceLine += "║\n";
-   status += priceLine;
+   string priceLine = "PRICE: " + DoubleToString(bid, 2) + " | SPREAD: " + IntegerToString(spread) + " pts";
+   if(spread > InpMaxSpreadPoints) priceLine += " [HIGH]";
+   status += priceLine + "\n";
    
    // Account Info
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
-   string accLine = "║ BALANCE: $" + DoubleToString(balance, 2) + " | EQUITY: $" + DoubleToString(equity, 2);
-   while(StringLen(accLine) < 58) accLine += " ";
-   accLine += "║\n";
-   status += accLine;
+   string accLine = "BALANCE: $" + DoubleToString(balance, 2) + " | EQUITY: $" + DoubleToString(equity, 2);
+   status += accLine + "\n";
    
    // Daily Stats
    UpdateDailyStats();
-   string statsLine = "║ TODAY: " + IntegerToString(g_winsToday) + "W/" + 
+   string statsLine = "TODAY: " + IntegerToString(g_winsToday) + "W/" + 
                      IntegerToString(g_lossesToday) + "L | P&L: $" + DoubleToString(g_profitToday, 2);
    if(InpMaxDailyProfit > 0)
       statsLine += " | Limit: " + IntegerToString(g_winsToday) + "/" + IntegerToString(InpMaxDailyProfit);
-   while(StringLen(statsLine) < 58) statsLine += " ";
-   statsLine += "║\n";
-   status += statsLine;
+   status += statsLine + "\n";
    
    // Signal Debug Info
-   status += "╠══════════════════════════════════════════════════════════╣\n";
-   string signalLine = "║ SIGNAL CHECKS TODAY: " + IntegerToString(g_signalChecks);
-   while(StringLen(signalLine) < 58) signalLine += " ";
-   signalLine += "║\n";
-   status += signalLine;
+   status += "----------------------------------------\n";
+   string signalLine = "SIGNAL CHECKS TODAY: " + IntegerToString(g_signalChecks);
+   status += signalLine + "\n";
    
-   status += "╠══════════════════════════════════════════════════════════╣\n";
+   status += "----------------------------------------\n";
    
    // Position Status
    bool hasPos = HasOpenPosition();
@@ -583,29 +614,23 @@ void DisplayStatus()
          double profitPts = (type == POSITION_TYPE_BUY) ? (current - entry)/_Point : (entry - current)/_Point;
          
          string posType = (type == POSITION_TYPE_BUY) ? "BUY" : "SELL";
-         string posLine = "║ POSITION: #" + IntegerToString((int)ticket) + " " + posType + " " + 
+         string posLine = "POSITION: #" + IntegerToString((int)ticket) + " " + posType + " " + 
                          DoubleToString(lots, 2) + " lots";
-         while(StringLen(posLine) < 58) posLine += " ";
-         posLine += "║\n";
-         status += posLine;
+         status += posLine + "\n";
          
-         string pnlLine = "║ P&L: $" + DoubleToString(profit, 2) + " | Points: " + DoubleToString(profitPts, 0);
+         string pnlLine = "P&L: $" + DoubleToString(profit, 2) + " | Points: " + DoubleToString(profitPts, 0);
          if(profitPts >= InpBE_Trigger) pnlLine += " [BE READY]";
          if(profitPts >= InpTrail_Start) pnlLine += " [TRAILING]";
-         while(StringLen(pnlLine) < 58) pnlLine += " ";
-         pnlLine += "║\n";
-         status += pnlLine;
+         status += pnlLine + "\n";
       }
    }
    else
    {
-      string noPosLine = "║ POSITION: No active trades";
-      while(StringLen(noPosLine) < 58) noPosLine += " ";
-      noPosLine += "║\n";
-      status += noPosLine;
+      string noPosLine = "POSITION: No active trades";
+      status += noPosLine + "\n";
    }
    
-   status += "╚══════════════════════════════════════════════════════════╝";
+   status += "========================================";
    
    Comment(status);
 }
@@ -636,32 +661,32 @@ bool DailyLimitsOK()
    
    if(InpMaxTradesPerDay > 0 && g_tradesToday >= InpMaxTradesPerDay)
    {
-      DebugLog("✋ Daily trade limit reached (" + IntegerToString(g_tradesToday) + "/" + 
+      DebugLog("[LIMIT] Daily trade limit reached (" + IntegerToString(g_tradesToday) + "/" + 
          IntegerToString(InpMaxTradesPerDay) + ")");
       return false;
    }
    
    if(InpMaxDailyLoss > 0 && g_lossesToday >= InpMaxDailyLoss)
    {
-      DebugLog("🛑 Daily loss limit reached (" + IntegerToString(g_lossesToday) + " losses)");
+      DebugLog("[STOP] Daily loss limit reached (" + IntegerToString(g_lossesToday) + " losses)");
       return false;
    }
    
    if(InpMaxDailyLossDollars > 0 && g_profitToday <= -InpMaxDailyLossDollars)
    {
-      DebugLog("🛑 Daily loss limit reached ($" + DoubleToString(-g_profitToday, 2) + ")");
+      DebugLog("[STOP] Daily loss limit reached ($" + DoubleToString(-g_profitToday, 2) + ")");
       return false;
    }
    
    if(InpMaxDailyProfit > 0 && g_winsToday >= InpMaxDailyProfit)
    {
-      DebugLog("🎯 Daily profit target reached (" + IntegerToString(g_winsToday) + " wins)");
+      DebugLog("[TARGET] Daily profit target reached (" + IntegerToString(g_winsToday) + " wins)");
       return false;
    }
    
    if(InpMaxDailyProfitDollars > 0 && g_profitToday >= InpMaxDailyProfitDollars)
    {
-      DebugLog("🎯 Daily profit target reached ($" + DoubleToString(g_profitToday, 2) + ")");
+      DebugLog("[TARGET] Daily profit target reached ($" + DoubleToString(g_profitToday, 2) + ")");
       return false;
    }
    
@@ -752,21 +777,21 @@ bool CheckCandlePattern(bool isBuy)
    if(bodyPercent < InpMinCandleBodyPercent)
    {
       if(InpLogSignalAnalysis)
-         DebugLog("✗ Candle too weak: " + DoubleToString(bodyPercent, 1) + "% body");
+         DebugLog("[FILTER] Candle too weak: " + DoubleToString(bodyPercent, 1) + "% body");
       return false;
    }
    
    if(isBuy && close <= open)
    {
       if(InpLogSignalAnalysis)
-         DebugLog("✗ BUY but bearish candle");
+         DebugLog("[FILTER] BUY but bearish candle");
       return false;
    }
    
    if(!isBuy && close >= open)
    {
       if(InpLogSignalAnalysis)
-         DebugLog("✗ SELL but bullish candle");
+         DebugLog("[FILTER] SELL but bullish candle");
       return false;
    }
    
@@ -781,7 +806,7 @@ bool CheckBuySignal()
    double fe, se, rs, at, mom, adx;
    if(!GetIndicatorValues(fe, se, rs, at, mom, adx)) 
    {
-      if(InpLogSignalAnalysis) DebugLog("✗ BUY: Failed to get indicator values");
+      if(InpLogSignalAnalysis) DebugLog("[ERROR] BUY: Failed to get indicator values");
       return false;
    }
 
@@ -804,13 +829,13 @@ bool CheckBuySignal()
    if(InpAvoidHighVolatility && atrPts > InpMaxATRPoints)
    {
       if(InpLogSignalAnalysis)
-         DebugLog("✗ BUY: High volatility (ATR=" + DoubleToString(atrPts, 0) + ")");
+         DebugLog("[FILTER] BUY: High volatility (ATR=" + DoubleToString(atrPts, 0) + ")");
       return false;
    }
    if(InpAvoidLowVolatility && atrPts < InpMinATRPoints)
    {
       if(InpLogSignalAnalysis)
-         DebugLog("✗ BUY: Low volatility (ATR=" + DoubleToString(atrPts, 0) + ")");
+         DebugLog("[FILTER] BUY: Low volatility (ATR=" + DoubleToString(atrPts, 0) + ")");
       return false;
    }
 
@@ -818,7 +843,7 @@ bool CheckBuySignal()
    if(InpAvoidChoppyMarket && adx < InpMinADX)
    {
       if(InpLogSignalAnalysis)
-         DebugLog("✗ BUY: Weak trend (ADX=" + DoubleToString(adx, 1) + " < " + DoubleToString(InpMinADX, 1) + ")");
+         DebugLog("[FILTER] BUY: Weak trend (ADX=" + DoubleToString(adx, 1) + " < " + DoubleToString(InpMinADX, 1) + ")");
       return false;
    }
 
@@ -829,7 +854,7 @@ bool CheckBuySignal()
    if(InpRequireTrendAlignment && !emaBullish)
    {
       if(InpLogSignalAnalysis)
-         DebugLog("✗ BUY: No trend (Fast <= Slow)");
+         DebugLog("[FILTER] BUY: No trend (Fast <= Slow)");
       return false;
    }
 
@@ -840,7 +865,7 @@ bool CheckBuySignal()
       if(emaDistance < InpMinEMADistancePoints)
       {
          if(InpLogSignalAnalysis)
-            DebugLog("✗ BUY: EMAs too close (" + DoubleToString(emaDistance, 1) + " pts)");
+            DebugLog("[FILTER] BUY: EMAs too close (" + DoubleToString(emaDistance, 1) + " pts)");
          return false;
       }
    }
@@ -849,7 +874,7 @@ bool CheckBuySignal()
    if(InpRequireStrongMomentum && mom < InpMinMomentumThreshold)
    {
       if(InpLogSignalAnalysis)
-         DebugLog("✗ BUY: Weak momentum (" + DoubleToString(mom, 5) + ")");
+         DebugLog("[FILTER] BUY: Weak momentum (" + DoubleToString(mom, 5) + ")");
       return false;
    }
 
@@ -859,7 +884,7 @@ bool CheckBuySignal()
       if(rs < InpRSI_BuyMin || rs > InpRSI_BuyMax)
       {
          if(InpLogSignalAnalysis)
-            DebugLog("✗ BUY: RSI out of zone (" + DoubleToString(rs, 1) + " not in " + 
+            DebugLog("[FILTER] BUY: RSI out of zone (" + DoubleToString(rs, 1) + " not in " + 
                DoubleToString(InpRSI_BuyMin, 0) + "-" + DoubleToString(InpRSI_BuyMax, 0) + ")");
          return false;
       }
@@ -876,32 +901,32 @@ bool CheckBuySignal()
    if(InpUseEMACrossEntry && emaCrossUp)
    {
       entrySignal = true;
-      patternName = "EMA-CROSS↑";
+      patternName = "EMA-CROSS-UP";
    }
    // Pattern 2: RSI Bounce from oversold
    else if(InpUseRSIBounceEntry && rs > InpRSI_BuyMin && rs < 55 && emaBullish)
    {
       entrySignal = true;
-      patternName = "RSI-BOUNCE↑";
+      patternName = "RSI-BOUNCE-UP";
    }
    // Pattern 3: Trend Following
    else if(InpUseTrendFollowEntry && emaBullish && fast[1] > fast[2] && slow[1] > slow[2])
    {
       entrySignal = true;
-      patternName = "TREND-FOLLOW↑";
+      patternName = "TREND-FOLLOW-UP";
    }
    // Pattern 4: Price above both EMAs with RSI support
    else if(fast[1] > slow[1] && rs >= 45 && rs <= 65)
    {
       entrySignal = true;
-      patternName = "EMA-SUPPORT↑";
+      patternName = "EMA-SUPPORT-UP";
    }
    
    if(!entrySignal)
    {
       if(InpLogSignalAnalysis && (g_signalChecks % 10 == 0)) // Log every 10th check to avoid spam
       {
-         DebugLog("✗ BUY: No entry pattern | RSI=" + DoubleToString(rs, 1) + 
+         DebugLog("[FILTER] BUY: No entry pattern | RSI=" + DoubleToString(rs, 1) + 
             " EMA=" + (emaBullish ? "BULL" : "BEAR") + " Cross=" + (emaCrossUp ? "YES" : "NO"));
       }
       return false;
@@ -909,7 +934,7 @@ bool CheckBuySignal()
 
    if(InpLogSignalAnalysis)
    {
-      DebugLog("✓✓✓ BUY SIGNAL: " + patternName + " | RSI=" + DoubleToString(rs, 1) + 
+      DebugLog("[SIGNAL] BUY SIGNAL: " + patternName + " | RSI=" + DoubleToString(rs, 1) + 
          " | ADX=" + DoubleToString(adx, 1) + " | ATR=" + DoubleToString(atrPts, 0));
    }
 
@@ -924,7 +949,7 @@ bool CheckSellSignal()
    double fe, se, rs, at, mom, adx;
    if(!GetIndicatorValues(fe, se, rs, at, mom, adx)) 
    {
-      if(InpLogSignalAnalysis) DebugLog("✗ SELL: Failed to get indicator values");
+      if(InpLogSignalAnalysis) DebugLog("[FILTER] SELL: Failed to get indicator values");
       return false;
    }
 
@@ -946,20 +971,20 @@ bool CheckSellSignal()
    if(InpAvoidHighVolatility && atrPts > InpMaxATRPoints)
    {
       if(InpLogSignalAnalysis)
-         DebugLog("✗ SELL: High volatility");
+         DebugLog("[FILTER] SELL: High volatility");
       return false;
    }
    if(InpAvoidLowVolatility && atrPts < InpMinATRPoints)
    {
       if(InpLogSignalAnalysis)
-         DebugLog("✗ SELL: Low volatility");
+         DebugLog("[FILTER] SELL: Low volatility");
       return false;
    }
 
    if(InpAvoidChoppyMarket && adx < InpMinADX)
    {
       if(InpLogSignalAnalysis)
-         DebugLog("✗ SELL: Weak trend (ADX=" + DoubleToString(adx, 1) + ")");
+         DebugLog("[FILTER] SELL: Weak trend (ADX=" + DoubleToString(adx, 1) + ")");
       return false;
    }
 
@@ -970,7 +995,7 @@ bool CheckSellSignal()
    if(InpRequireTrendAlignment && !emaBearish)
    {
       if(InpLogSignalAnalysis)
-         DebugLog("✗ SELL: No trend (Fast >= Slow)");
+         DebugLog("[FILTER] SELL: No trend (Fast >= Slow)");
       return false;
    }
 
@@ -980,7 +1005,7 @@ bool CheckSellSignal()
       if(emaDistance < InpMinEMADistancePoints)
       {
          if(InpLogSignalAnalysis)
-            DebugLog("✗ SELL: EMAs too close (" + DoubleToString(emaDistance, 1) + " pts)");
+            DebugLog("[FILTER] SELL: EMAs too close (" + DoubleToString(emaDistance, 1) + " pts)");
          return false;
       }
    }
@@ -988,7 +1013,7 @@ bool CheckSellSignal()
    if(InpRequireStrongMomentum && mom > -InpMinMomentumThreshold)
    {
       if(InpLogSignalAnalysis)
-         DebugLog("✗ SELL: Weak momentum");
+         DebugLog("[FILTER] SELL: Weak momentum");
       return false;
    }
 
@@ -998,7 +1023,7 @@ bool CheckSellSignal()
       if(rs < InpRSI_SellMin || rs > InpRSI_SellMax)
       {
          if(InpLogSignalAnalysis)
-            DebugLog("✗ SELL: RSI out of zone (" + DoubleToString(rs, 1) + " not in " + 
+            DebugLog("[FILTER] SELL: RSI out of zone (" + DoubleToString(rs, 1) + " not in " + 
                DoubleToString(InpRSI_SellMin, 0) + "-" + DoubleToString(InpRSI_SellMax, 0) + ")");
          return false;
       }
@@ -1014,32 +1039,32 @@ bool CheckSellSignal()
    if(InpUseEMACrossEntry && emaCrossDown)
    {
       entrySignal = true;
-      patternName = "EMA-CROSS↓";
+      patternName = "EMA-CROSS-DOWN";
    }
    // Pattern 2: RSI Bounce from overbought
    else if(InpUseRSIBounceEntry && rs < InpRSI_SellMax && rs > 45 && emaBearish)
    {
       entrySignal = true;
-      patternName = "RSI-BOUNCE↓";
+      patternName = "RSI-BOUNCE-DOWN";
    }
    // Pattern 3: Trend Following
    else if(InpUseTrendFollowEntry && emaBearish && fast[1] < fast[2] && slow[1] < slow[2])
    {
       entrySignal = true;
-      patternName = "TREND-FOLLOW↓";
+      patternName = "TREND-FOLLOW-DOWN";
    }
    // Pattern 4: Price below both EMAs with RSI resistance
    else if(fast[1] < slow[1] && rs >= 35 && rs <= 55)
    {
       entrySignal = true;
-      patternName = "EMA-RESIST↓";
+      patternName = "EMA-RESIST-DOWN";
    }
    
    if(!entrySignal)
    {
       if(InpLogSignalAnalysis && (g_signalChecks % 10 == 0))
       {
-         DebugLog("✗ SELL: No entry pattern | RSI=" + DoubleToString(rs, 1) + 
+         DebugLog("[FILTER] SELL: No entry pattern | RSI=" + DoubleToString(rs, 1) + 
             " EMA=" + (emaBearish ? "BEAR" : "BULL") + " Cross=" + (emaCrossDown ? "YES" : "NO"));
       }
       return false;
@@ -1047,7 +1072,7 @@ bool CheckSellSignal()
 
    if(InpLogSignalAnalysis)
    {
-      DebugLog("✓✓✓ SELL SIGNAL: " + patternName + " | RSI=" + DoubleToString(rs, 1) + 
+      DebugLog("[SIGNAL] SELL SIGNAL: " + patternName + " | RSI=" + DoubleToString(rs, 1) + 
          " | ADX=" + DoubleToString(adx, 1) + " | ATR=" + DoubleToString(atrPts, 0));
    }
 
@@ -1089,7 +1114,7 @@ bool OpenTrade(bool isBuy)
    int spread = (int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    
-   DebugLog("▶ OPENING " + side + " | Lot=" + DoubleToString(lots, 2) + 
+   DebugLog("[OPEN] OPENING " + side + " | Lot=" + DoubleToString(lots, 2) + 
       " Entry=" + DoubleToString(entry, _Digits) + 
       " SL=" + IntegerToString(slPts) + "pts TP=" + IntegerToString(tpPts) + "pts Spread=" + IntegerToString(spread));
 
@@ -1103,14 +1128,14 @@ bool OpenTrade(bool isBuy)
       ResetDailyCountersIfNeeded();
       g_tradesToday++;
       
-      DebugLog("✓ TRADE OPENED " + side + " #" + IntegerToString(trade.ResultOrder()));
+      DebugLog("[OK] TRADE OPENED " + side + " #" + IntegerToString(trade.ResultOrder()));
       DebugLog("  Today: " + IntegerToString(g_tradesToday) + " trades | " + 
          IntegerToString(g_winsToday) + "W/" + IntegerToString(g_lossesToday) + "L | " +
          "P&L: $" + DoubleToString(g_profitToday, 2) + " | Balance: $" + DoubleToString(balance, 2));
    }
    else
    {
-      DebugLog("✗ FAILED " + side + " | Error: " + IntegerToString(trade.ResultRetcode()) + 
+      DebugLog("[FILTER] FAILED " + side + " | Error: " + IntegerToString(trade.ResultRetcode()) + 
          " - " + trade.ResultRetcodeDescription());
    }
    
@@ -1153,7 +1178,7 @@ void ManagePosition()
                trade.SetExpertMagicNumber(InpMagic);
                if(trade.PositionClosePartial(ticket, closeVol))
                {
-                  DebugLog("  ✓ Partial close " + DoubleToString(closeVol, 2) + " lots at +" + 
+                  DebugLog("  [OK] Partial close " + DoubleToString(closeVol, 2) + " lots at +" + 
                      DoubleToString(profitPts, 0) + " pts (locking profit)");
                }
             }
@@ -1197,7 +1222,7 @@ void ManagePosition()
          trade.SetExpertMagicNumber(InpMagic);
          if(trade.PositionModify(ticket, newSL, tp))
          {
-            DebugLog("  ✓ SL adjusted to " + DoubleToString(newSL, _Digits) + 
+            DebugLog("  [OK] SL adjusted to " + DoubleToString(newSL, _Digits) + 
                " (profit: +" + DoubleToString(profitPts, 0) + " pts)");
          }
       }
@@ -1242,31 +1267,31 @@ int OnInit()
 
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    
-   Print("╔══════════════════════════════════════════════════════════╗");
-   Print("║      $50 SCALPER v5.00 - TUNED EDITION                  ║");
-   Print("║      RELAXED SIGNALS - MORE OPPORTUNITIES               ║");
-   Print("╚══════════════════════════════════════════════════════════╝");
-   Print("💰 Account Balance: $", DoubleToString(balance, 2));
-   Print("📊 Strategy: Relaxed Filters (More Trades)");
-   Print("⚙️  Lot Size: ", InpFixedLot, " (Max: ", InpMaxLot, ")");
-   Print("🎯 Risk/Trade: ~$", DoubleToString(InpScalpSL_Points * 0.01, 2), " | Profit/Trade: ~$", DoubleToString(InpScalpTP_Points * 0.01, 2));
-   Print("🛡️  Daily Limits: Max ", InpMaxDailyLoss, " losses OR $", InpMaxDailyProfitDollars, " profit");
-   Print("📉 SL: ", InpScalpSL_Points, " pts | 📈 TP: ", InpScalpTP_Points, " pts");
-   Print("📊 Spread Limit: ", InpMaxSpreadPoints, " pts (RELAXED)");
-   Print("══════════════════════════════════════════════════════════");
-   Print("🔓 RELAXED FILTERS:");
-   Print("   ✓ RSI Zone: 40-70 (buy) / 30-60 (sell) - WIDENED");
-   Print("   ✓ Momentum Filter: DISABLED");
-   Print("   ✓ ADX Filter: DISABLED");
-   Print("   Print("   ✓ EMA Distance: DISABLED");
-   Print("   ✓ Candle Body: OPTIONAL");
-   Print("══════════════════════════════════════════════════════════");
-   Print("🕐 SESSION SCHEDULE:");
+   Print("========================================");
+   Print("   $50 SCALPER v5.00 - TUNED EDITION   ");
+   Print("   RELAXED SIGNALS - MORE OPPORTUNITIES");
+   Print("========================================");
+   Print("Account Balance: $", DoubleToString(balance, 2));
+   Print("Strategy: Relaxed Filters (More Trades)");
+   Print("Lot Size: ", InpFixedLot, " (Max: ", InpMaxLot, ")");
+   Print("Risk/Trade: ~$", DoubleToString(InpScalpSL_Points * 0.01, 2), " | Profit/Trade: ~$", DoubleToString(InpScalpTP_Points * 0.01, 2));
+   Print("Daily Limits: Max ", InpMaxDailyLoss, " losses OR $", InpMaxDailyProfitDollars, " profit");
+   Print("SL: ", InpScalpSL_Points, " pts | TP: ", InpScalpTP_Points, " pts");
+   Print("Spread Limit: ", InpMaxSpreadPoints, " pts (RELAXED)");
+   Print("========================================");
+   Print("RELAXED FILTERS:");
+   Print("   [OK] RSI Zone: 40-70 (buy) / 30-60 (sell) - WIDENED");
+   Print("   [OK] Momentum Filter: DISABLED");
+   Print("   [OK] ADX Filter: DISABLED");
+   Print("   [OK] EMA Distance: DISABLED");
+   Print("   [OK] Candle Body: OPTIONAL");
+   Print("========================================");
+   Print("SESSION SCHEDULE:");
    Print("   Pre-London:        07:00-08:00 GMT [ENABLED]");
    Print("   London Session:    08:00-12:00 GMT [ENABLED]");
    Print("   London-NY Overlap: 12:00-16:00 GMT [PEAK SCALPING]");
    Print("   New York Session:  13:00-21:00 GMT [ENABLED]");
-   Print("══════════════════════════════════════════════════════════");
+   Print("========================================");
    
    ShowAccountWarning();
 
@@ -1304,7 +1329,7 @@ void OnTick()
    if(!SpreadOK())
    {
       if(InpLogSignalAnalysis && (g_signalChecks % 20 == 0))
-         DebugLog("✗ SKIP: Spread too high (" + IntegerToString(spreadPts) + " > " + 
+         DebugLog("[FILTER] SKIP: Spread too high (" + IntegerToString(spreadPts) + " > " + 
             IntegerToString(InpMaxSpreadPoints) + ")");
       return;
    }
@@ -1318,7 +1343,7 @@ void OnTick()
    {
       int remaining = InpCooldownSeconds - (int)(TimeCurrent() - g_lastTradeTime);
       if(remaining > 0 && (g_signalChecks % 10 == 0))
-         DebugLog("⏳ Cooldown: " + IntegerToString(remaining) + "s remaining");
+         DebugLog("[WAIT] Cooldown: " + IntegerToString(remaining) + "s remaining");
       return;
    }
 
@@ -1337,7 +1362,7 @@ void OnTick()
 
    if(buySignal && sellSignal)
    {
-      DebugLog("✗ Conflicting signals - skipping");
+      DebugLog("[FILTER] Conflicting signals - skipping");
       return;
    }
 
