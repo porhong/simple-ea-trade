@@ -1,12 +1,12 @@
 //+------------------------------------------------------------------+
-//|                                      ScalperEA_v5_Global.mq5    |
-//|              Universal Scalper with Global Naming Convention    |
-//|              Easy Strategy Configuration & Adjustment           |
+//|                                      ScalperEA_v5_Countdown.mq5 |
+//|              Universal Scalper with Countdown Dashboard         |
+//|              Real-time Timer Display & Status Updates           |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "5.00"
-#property description "Universal Scalper - Global Config Edition"
-#property description "Configurable for any account size and strategy"
+#property version   "5.10"
+#property description "Universal Scalper - Countdown Dashboard Edition"
+#property description "Real-time cooldown and delay timers"
 
 #include <Trade/Trade.mqh>
 #include <Trade/PositionInfo.mqh>
@@ -142,13 +142,49 @@ input double   InpMinATRPoints        = 200.0;        // Min ATR required
 //| SECTION 12: DISPLAY SETTINGS                                     |
 //+------------------------------------------------------------------+
 input group    "=== DISPLAY SETTINGS ==="
+input bool     InpEnableDashboard     = true;         // Enable visual dashboard
 input bool     InpEnableDebugLog      = true;         // Enable debug logging
 input bool     InpLogSignalDetails    = true;         // Log signal analysis
 input bool     InpShowDailyStats      = true;         // Show daily statistics
 input bool     InpShowAccountWarnings = true;         // Show account warnings
 input bool     InpShowSessionInfo     = true;         // Show session info
 input bool     InpShowPositionInfo    = true;         // Show position info
-input int      InpStatusUpdateSec     = 5;            // Status update interval
+
+// Minimal Color Palette - Professional Dark Theme
+input color    InpColorBg           = C'28, 30, 34';    // Background (dark charcoal)
+input color    InpColorHeader       = C'38, 40, 46';    // Header (slate gray)
+input color    InpColorText         = C'200, 202, 205'; // Text (soft white)
+input color    InpColorTextDim      = C'130, 133, 139'; // Dim text (gray)
+
+input color    InpColorActive       = C'46, 120, 80';   // Active/Enabled (muted green)
+input color    InpColorDisabled     = C'100, 60, 60';   // Disabled (muted red-gray)
+input color    InpColorWarning      = C'160, 130, 60';  // Warning/Waiting (amber)
+input color    InpColorCountdown    = C'60, 90, 120';   // Countdown state (blue-gray)
+
+input color    InpColorProfit       = C'50, 130, 80';   // Profit (soft green)
+input color    InpColorLoss         = C'130, 60, 60';   // Loss (soft red)
+input color    InpColorNeutral      = C'45, 48, 54';    // Neutral panels
+
+input int      InpDashboardX        = 10;            // Dashboard X position
+input int      InpDashboardY        = 30;            // Dashboard Y position
+input int      InpStatusUpdateSec   = 1;             // Status update interval (seconds)
+
+//+------------------------------------------------------------------+
+//| DISPLAY OBJECT NAMES                                             |
+//+------------------------------------------------------------------+
+#define OBJ_PREFIX      "ScalperV5_"
+#define OBJ_BG          OBJ_PREFIX + "BG"
+#define OBJ_HEADER      OBJ_PREFIX + "Header"
+#define OBJ_SESSION     OBJ_PREFIX + "Session"
+#define OBJ_TRADING     OBJ_PREFIX + "Trading"
+#define OBJ_PRICE       OBJ_PREFIX + "Price"
+#define OBJ_ACCOUNT     OBJ_PREFIX + "Account"
+#define OBJ_DAILY       OBJ_PREFIX + "Daily"
+#define OBJ_POSITION    OBJ_PREFIX + "Position"
+#define OBJ_SIGNAL      OBJ_PREFIX + "Signal"
+#define OBJ_COUNTDOWN   OBJ_PREFIX + "Countdown"
+#define OBJ_PROGRESS_BG OBJ_PREFIX + "ProgBG"
+#define OBJ_PROGRESS_BAR OBJ_PREFIX + "ProgBar"
 
 //+------------------------------------------------------------------+
 //| GLOBAL VARIABLES                                                 |
@@ -183,6 +219,14 @@ string  g_SessionStatus     = "WAITING";
 bool    g_IsTradingAllowed  = false;
 string  g_NextSessionName   = "";
 datetime g_NextSessionTime  = 0;
+
+// Countdown tracking
+int     g_StartUpRemaining  = 0;     // Seconds remaining for startup
+int     g_CooldownRemaining = 0;     // Seconds remaining for cooldown
+bool    g_IsInStartup       = false;
+bool    g_IsInCooldown      = false;
+double  g_CooldownProgress  = 0.0;   // 0.0 to 1.0
+double  g_StartupProgress   = 0.0;   // 0.0 to 1.0
 
 // Session enum
 enum ENUM_TRADING_SESSION
@@ -387,16 +431,31 @@ bool IsStartupDelayComplete(int &remainingSeconds)
 {
    remainingSeconds = 0;
    
-   if(InpStartupDelaySec <= 0) return true;  // Disabled
-   if(g_EAStartTime == 0) return true;       // Not initialized
+   if(InpStartupDelaySec <= 0) 
+   {
+      g_IsInStartup = false;
+      return true;  // Disabled
+   }
+   if(g_EAStartTime == 0) 
+   {
+      g_IsInStartup = false;
+      return true;  // Not initialized
+   }
    
    datetime currentTime = TimeCurrent();
    int elapsedSeconds = (int)(currentTime - g_EAStartTime);
    
    if(elapsedSeconds >= InpStartupDelaySec)
+   {
+      g_IsInStartup = false;
+      g_StartupProgress = 1.0;
       return true;
+   }
    
    remainingSeconds = InpStartupDelaySec - elapsedSeconds;
+   g_StartUpRemaining = remainingSeconds;
+   g_StartupProgress = (double)elapsedSeconds / (double)InpStartupDelaySec;
+   g_IsInStartup = true;
    return false;
 }
 
@@ -488,7 +547,7 @@ bool IsInSessionBuffer(int hour, int min, ENUM_TRADING_SESSION session)
 
 void UpdateSessionStatus()
 {
-   if(!InpShowSessionInfo) return;
+   if(!InpShowSessionInfo && !InpEnableDashboard) return;
    
    int hour, min;
    ENUM_TRADING_SESSION session = GetCurrentSession(hour, min);
@@ -501,10 +560,19 @@ void UpdateSessionStatus()
    g_IsTradingAllowed = false;
    g_SessionStatus = "BLOCKED";
    
-   if(!InpUseSessionFilter)
+   // Priority: Startup > Cooldown > Session > Spread
+   if(g_IsInStartup)
+   {
+      g_SessionStatus = "STARTUP";
+   }
+   else if(g_IsInCooldown)
+   {
+      g_SessionStatus = "COOLDOWN";
+   }
+   else if(!InpUseSessionFilter)
    {
       g_IsTradingAllowed = true;
-      g_SessionStatus = "ACTIVE (No Filter)";
+      g_SessionStatus = "ACTIVE";
    }
    else if(!enabled)
    {
@@ -542,8 +610,26 @@ bool IsTradingSessionOK()
 
 bool IsCooldownComplete()
 {
-   if(InpTradeCooldownSec <= 0) return true;
-   return (TimeCurrent() - g_LastTradeTime) >= InpTradeCooldownSec;
+   if(InpTradeCooldownSec <= 0) 
+   {
+      g_IsInCooldown = false;
+      g_CooldownProgress = 1.0;
+      return true;
+   }
+   
+   int elapsed = (int)(TimeCurrent() - g_LastTradeTime);
+   if(elapsed >= InpTradeCooldownSec)
+   {
+      g_IsInCooldown = false;
+      g_CooldownProgress = 1.0;
+      g_CooldownRemaining = 0;
+      return true;
+   }
+   
+   g_CooldownRemaining = InpTradeCooldownSec - elapsed;
+   g_CooldownProgress = (double)elapsed / (double)InpTradeCooldownSec;
+   g_IsInCooldown = true;
+   return false;
 }
 
 bool AreDailyLimitsOK()
@@ -1092,57 +1178,376 @@ void ManageOpenPositions()
 //| DISPLAY FUNCTIONS                                                |
 //+------------------------------------------------------------------+
 
-void UpdateDisplay()
+void CreateDashboardObjects()
 {
-   if(!InpShowSessionInfo && !InpShowPositionInfo) return;
+   if(!InpEnableDashboard) return;
+   
+   int x = InpDashboardX;
+   int y = InpDashboardY;
+   int width = 280;
+   int rowHeight = 22;
+   int headerHeight = 28;
+   int progressHeight = 4;
+   
+   // Main Background
+   if(ObjectFind(0, OBJ_BG) < 0)
+   {
+      ObjectCreate(0, OBJ_BG, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+   }
+   ObjectSetInteger(0, OBJ_BG, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, OBJ_BG, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, OBJ_BG, OBJPROP_XSIZE, width);
+   ObjectSetInteger(0, OBJ_BG, OBJPROP_YSIZE, headerHeight + (rowHeight * 7) + progressHeight + 12);
+   ObjectSetInteger(0, OBJ_BG, OBJPROP_BGCOLOR, InpColorBg);
+   ObjectSetInteger(0, OBJ_BG, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+   
+   // Header
+   CreateEditObject(OBJ_HEADER, x + 2, y + 2, width - 4, headerHeight - 4, 
+                    InpColorHeader, InpColorText, ALIGN_CENTER, 
+                    "  " + InpStrategyName + "  ", 9, true);
+   
+   int currentY = y + headerHeight;
+   
+   // Session Status Row
+   CreateEditObject(OBJ_SESSION, x + 2, currentY + 2, width - 4, rowHeight - 4,
+                    InpColorNeutral, InpColorTextDim, ALIGN_LEFT, " Initializing...", 8);
+   
+   currentY += rowHeight;
+   
+   // Trading Status Row
+   CreateEditObject(OBJ_TRADING, x + 2, currentY + 2, 90, rowHeight - 4,
+                    InpColorDisabled, InpColorText, ALIGN_CENTER, " STANDBY ", 8, true);
+   
+   CreateEditObject(OBJ_PRICE, x + 94, currentY + 2, width - 96, rowHeight - 4,
+                    InpColorNeutral, InpColorTextDim, ALIGN_LEFT, " -- ", 8);
+   
+   currentY += rowHeight;
+   
+   // Countdown / Timer Row (NEW)
+   CreateEditObject(OBJ_COUNTDOWN, x + 2, currentY + 2, width - 4, rowHeight - 4,
+                    InpColorNeutral, InpColorTextDim, ALIGN_CENTER, " Ready ", 8, true);
+   
+   currentY += rowHeight;
+   
+   // Progress Bar Background (NEW)
+   if(ObjectFind(0, OBJ_PROGRESS_BG) < 0)
+   {
+      ObjectCreate(0, OBJ_PROGRESS_BG, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+   }
+   ObjectSetInteger(0, OBJ_PROGRESS_BG, OBJPROP_XDISTANCE, x + 2);
+   ObjectSetInteger(0, OBJ_PROGRESS_BG, OBJPROP_YDISTANCE, currentY + 2);
+   ObjectSetInteger(0, OBJ_PROGRESS_BG, OBJPROP_XSIZE, width - 4);
+   ObjectSetInteger(0, OBJ_PROGRESS_BG, OBJPROP_YSIZE, progressHeight);
+   ObjectSetInteger(0, OBJ_PROGRESS_BG, OBJPROP_BGCOLOR, C'60, 60, 60');
+   ObjectSetInteger(0, OBJ_PROGRESS_BG, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+   
+   // Progress Bar Fill (NEW)
+   if(ObjectFind(0, OBJ_PROGRESS_BAR) < 0)
+   {
+      ObjectCreate(0, OBJ_PROGRESS_BAR, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+   }
+   ObjectSetInteger(0, OBJ_PROGRESS_BAR, OBJPROP_XDISTANCE, x + 2);
+   ObjectSetInteger(0, OBJ_PROGRESS_BAR, OBJPROP_YDISTANCE, currentY + 2);
+   ObjectSetInteger(0, OBJ_PROGRESS_BAR, OBJPROP_XSIZE, 0); // Start at 0
+   ObjectSetInteger(0, OBJ_PROGRESS_BAR, OBJPROP_YSIZE, progressHeight);
+   ObjectSetInteger(0, OBJ_PROGRESS_BAR, OBJPROP_BGCOLOR, InpColorActive);
+   ObjectSetInteger(0, OBJ_PROGRESS_BAR, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+   
+   currentY += (progressHeight + 2);
+   
+   // Account Info Row
+   CreateEditObject(OBJ_ACCOUNT, x + 2, currentY + 2, width - 4, rowHeight - 4,
+                    InpColorNeutral, InpColorTextDim, ALIGN_LEFT, " Bal: $-- ", 8);
+   
+   currentY += rowHeight;
+   
+   // Daily Stats Row
+   CreateEditObject(OBJ_DAILY, x + 2, currentY + 2, width - 4, rowHeight - 4,
+                    InpColorNeutral, InpColorTextDim, ALIGN_LEFT, " Today: --W/--L | $-- ", 8);
+   
+   currentY += rowHeight;
+   
+   // Signal/Filter Status Row
+   CreateEditObject(OBJ_SIGNAL, x + 2, currentY + 2, width - 4, rowHeight - 4,
+                    InpColorNeutral, InpColorTextDim, ALIGN_LEFT, " Waiting... ", 8);
+   
+   currentY += rowHeight;
+   
+   // Position Info Box
+   CreateEditObject(OBJ_POSITION, x + 2, currentY + 2, width - 4, (rowHeight * 2) - 2,
+                    InpColorBg, InpColorTextDim, ALIGN_LEFT, " No Position ", 8);
+}
+
+void CreateEditObject(string name, int x, int y, int width, int height, 
+                      color bgColor, color textColor, ENUM_ALIGN_MODE align, 
+                      string text, int fontSize, bool bold = false)
+{
+   if(ObjectFind(0, name) < 0)
+   {
+      ObjectCreate(0, name, OBJ_EDIT, 0, 0, 0);
+   }
+   
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_XSIZE, width);
+   ObjectSetInteger(0, name, OBJPROP_YSIZE, height);
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bgColor);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, textColor);
+   ObjectSetInteger(0, name, OBJPROP_ALIGN, align);
+   ObjectSetInteger(0, name, OBJPROP_READONLY, true);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, fontSize);
+   
+   string fontName = bold ? "Arial Bold" : "Arial";
+   ObjectSetString(0, name, OBJPROP_FONT, fontName);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   
+   ObjectSetInteger(0, name, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+}
+
+void UpdateProgressBar(double progress, color barColor)
+{
+   if(!InpEnableDashboard) return;
+   
+   int x = InpDashboardX;
+   int y = InpDashboardY;
+   int width = 280;
+   int headerHeight = 28;
+   int rowHeight = 22;
+   int progressHeight = 4;
+   
+   // Calculate Y position (after header + 2 rows + countdown row)
+   int progressY = y + headerHeight + (rowHeight * 3) + 2;
+   
+   int maxWidth = width - 4;
+   int fillWidth = (int)(maxWidth * MathMax(0.0, MathMin(1.0, progress)));
+   
+   if(ObjectFind(0, OBJ_PROGRESS_BAR) >= 0)
+   {
+      ObjectSetInteger(0, OBJ_PROGRESS_BAR, OBJPROP_XSIZE, fillWidth);
+      ObjectSetInteger(0, OBJ_PROGRESS_BAR, OBJPROP_BGCOLOR, barColor);
+   }
+   
+   if(ObjectFind(0, OBJ_PROGRESS_BG) >= 0)
+   {
+      ObjectSetInteger(0, OBJ_PROGRESS_BG, OBJPROP_YDISTANCE, progressY);
+   }
+   if(ObjectFind(0, OBJ_PROGRESS_BAR) >= 0)
+   {
+      ObjectSetInteger(0, OBJ_PROGRESS_BAR, OBJPROP_YDISTANCE, progressY);
+   }
+}
+
+void UpdateDashboard()
+{
+   if(!InpEnableDashboard) return;
    
    datetime now = TimeCurrent();
    if(now - g_LastStatusUpdate < InpStatusUpdateSec) return;
    g_LastStatusUpdate = now;
    
-   UpdateSessionStatus();
+   // Update countdown trackers first
+   int startupRemaining = 0;
+   IsStartupDelayComplete(startupRemaining);
    
-   string display = "";
-   
-   // Header
-   display += "========================================\n";
-   display += "     " + InpStrategyName + " v5.00\n";
-   display += "========================================\n";
-   
-   // Startup delay info
-   string delayStatus = GetStartupDelayStatus();
-   if(delayStatus != "DISABLED" && delayStatus != "COMPLETE")
+   int cooldownRemaining = 0;
+   if(!IsCooldownComplete())
    {
-      display += "STARTUP DELAY: " + delayStatus + " remaining\n";
-      display += "----------------------------------------\n";
+      cooldownRemaining = g_CooldownRemaining;
    }
    
-   // Session info
-   display += "SESSION: " + g_CurrentSession + "\n";
-   display += "STATUS:  " + g_SessionStatus + "\n";
-   display += "TRADING: " + (g_IsTradingAllowed ? "[ON] ENABLED" : "[OFF] DISABLED") + "\n";
-   display += "----------------------------------------\n";
+   UpdateSessionStatus();
+   UpdateDailyStatistics();
    
-   // Market info
-   int spread = (int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   display += "PRICE: " + DoubleToString(bid, 2) + " | SPREAD: " + IntegerToString(spread) + "\n";
+   int spread = (int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
    
-   // Account info
+   // Determine current state and countdown
+   string countdownText = "";
+   color countdownColor = InpColorNeutral;
+   color countdownTextColor = InpColorTextDim;
+   double progress = 0.0;
+   color progressColor = InpColorActive;
+   bool showProgress = false;
+   
+   if(g_IsInStartup)
+   {
+      int mins = g_StartUpRemaining / 60;
+      int secs = g_StartUpRemaining % 60;
+      countdownText = " STARTUP: " + (mins > 0 ? IntegerToString(mins) + "m " : "") + IntegerToString(secs) + "s ";
+      countdownColor = InpColorCountdown;
+      countdownTextColor = InpColorText;
+      progress = g_StartupProgress;
+      progressColor = C'80, 100, 130'; // Blue-ish for startup
+      showProgress = true;
+   }
+   else if(g_IsInCooldown)
+   {
+      int mins = g_CooldownRemaining / 60;
+      int secs = g_CooldownRemaining % 60;
+      countdownText = " COOLDOWN: " + (mins > 0 ? IntegerToString(mins) + "m " : "") + IntegerToString(secs) + "s ";
+      countdownColor = InpColorWarning;
+      countdownTextColor = C'40, 30, 10'; // Dark text on amber
+      progress = g_CooldownProgress;
+      progressColor = InpColorWarning;
+      showProgress = true;
+   }
+   else
+   {
+      countdownText = " Ready to Trade ";
+      countdownColor = InpColorActive;
+      countdownTextColor = InpColorText;
+      progress = 1.0;
+      progressColor = InpColorActive;
+      showProgress = false; // Hide progress when ready
+   }
+   
+   // Update Countdown Row
+   UpdateObject(OBJ_COUNTDOWN, countdownColor, countdownTextColor, countdownText);
+   
+   // Update Progress Bar
+   if(showProgress)
+   {
+      UpdateProgressBar(progress, progressColor);
+   }
+   else
+   {
+      // Fill it completely when ready
+      UpdateProgressBar(1.0, InpColorActive);
+   }
+   
+   // Update Session Info
+   color sessionColor = InpColorNeutral;
+   string sessionText = " " + g_CurrentSession + " | " + g_SessionStatus;
+   
+   if(g_SessionStatus == "ACTIVE") sessionColor = InpColorNeutral;
+   else if(g_SessionStatus == "STARTUP") sessionColor = InpColorCountdown;
+   else if(g_SessionStatus == "COOLDOWN") sessionColor = InpColorWarning;
+   else if(g_SessionStatus == "DISABLED") sessionColor = InpColorDisabled;
+   else if(g_SessionStatus == "BUFFER" || g_SessionStatus == "HIGH-SPREAD") 
+      sessionColor = InpColorWarning;
+   
+   UpdateObject(OBJ_SESSION, sessionColor, InpColorTextDim, sessionText);
+   
+   // Update Trading Status
+   color tradingColor = g_IsTradingAllowed ? InpColorActive : InpColorDisabled;
+   color tradingTextColor = InpColorText;
+   string tradingText = "";
+   
+   if(g_IsTradingAllowed) 
+   {
+      tradingText = " ACTIVE ";
+      tradingColor = InpColorActive;
+   }
+   else if(g_IsInStartup)
+   {
+      tradingText = " WARMUP ";
+      tradingColor = InpColorCountdown;
+   }
+   else if(g_IsInCooldown)
+   {
+      tradingText = " PAUSE ";
+      tradingColor = InpColorWarning;
+   }
+   else
+   {
+      tradingText = " STANDBY ";
+      tradingColor = InpColorNeutral;
+      tradingTextColor = InpColorTextDim;
+   }
+   
+   UpdateObject(OBJ_TRADING, tradingColor, tradingTextColor, tradingText);
+   
+   // Update Price Info
+   string priceText = " " + DoubleToString(bid, _Digits) + "  " + IntegerToString(spread) + " pts";
+   color priceColor = InpColorNeutral;
+   color priceTextColor = InpColorText;
+   
+   if(spread > InpMaxSpreadPoints * 0.8) priceTextColor = InpColorWarning;
+   if(spread > InpMaxSpreadPoints) priceTextColor = InpColorDisabled;
+   
+   UpdateObject(OBJ_PRICE, priceColor, priceTextColor, priceText);
+   
+   // Update Account Info
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
-   display += "BALANCE: $" + DoubleToString(balance, 2) + " | EQUITY: $" + DoubleToString(equity, 2) + "\n";
+   string accountText = " Bal: $" + DoubleToString(balance, 2);
    
-   // Daily stats
-   UpdateDailyStatistics();
-   display += "TODAY: " + IntegerToString(g_DailyWinCount) + "W/" + 
-              IntegerToString(g_DailyLossCount) + "L | P&L: $" + DoubleToString(g_DailyProfit, 2) + "\n";
-   display += "SIGNAL CHECKS: " + IntegerToString(g_SignalCheckCount) + "\n";
-   display += "----------------------------------------\n";
+   if(MathAbs(equity - balance) > 0.01)
+   {
+      accountText += " (" + (equity > balance ? "+" : "") + DoubleToString(equity - balance, 2) + ")";
+   }
    
-   // Position info
-   bool hasPosition = HasOpenPosition();
-   if(hasPosition)
+   color accountColor = InpColorNeutral;
+   color accountTextColor = InpColorText;
+   
+   if(equity > balance) accountTextColor = InpColorProfit;
+   if(equity < balance) accountTextColor = InpColorLoss;
+   
+   UpdateObject(OBJ_ACCOUNT, accountColor, accountTextColor, accountText);
+   
+   // Update Daily Stats
+   string dailyText = " " + IntegerToString(g_DailyWinCount) + "W / " + 
+                      IntegerToString(g_DailyLossCount) + "L  |  $" + 
+                      DoubleToString(g_DailyProfit, 2);
+   
+   color dailyColor = InpColorNeutral;
+   color dailyTextColor = InpColorText;
+   
+   if(g_DailyProfit > 0) dailyTextColor = InpColorProfit;
+   if(g_DailyProfit < 0) dailyTextColor = InpColorLoss;
+   
+   if((InpDailyMaxWinAmount > 0 && g_DailyProfit >= InpDailyMaxWinAmount * 0.8) || 
+      (InpMaxTradesPerDay > 0 && g_DailyTradeCount >= InpMaxTradesPerDay * 0.8))
+   {
+      dailyTextColor = InpColorWarning;
+   }
+   
+   UpdateObject(OBJ_DAILY, dailyColor, dailyTextColor, dailyText);
+   
+   // Update Signal/Filter Status
+   string filterText = " ";
+   color filterColor = InpColorNeutral;
+   color filterTextColor = InpColorTextDim;
+   
+   if(g_IsInStartup)
+   {
+      filterText += "Initializing system...";
+      filterTextColor = InpColorText;
+   }
+   else if(g_IsInCooldown)
+   {
+      filterText += "Waiting for cooldown...";
+      filterTextColor = InpColorWarning;
+   }
+   else if(!g_IsTradingAllowed) 
+   {
+      filterText += "Session closed";
+      filterTextColor = InpColorTextDim;
+   }
+   else if(!IsSpreadAcceptable()) 
+   {
+      filterText += "High spread detected";
+      filterTextColor = InpColorWarning;
+   }
+   else if(!AreDailyLimitsOK()) 
+   {
+      filterText += "Daily limit reached";
+      filterTextColor = InpColorDisabled;
+   }
+   else 
+   {
+      filterText += "Monitoring market...";
+      filterTextColor = InpColorActive;
+   }
+   
+   UpdateObject(OBJ_SIGNAL, filterColor, filterTextColor, filterText);
+   
+   // Update Position Info
+   string posText = "";
+   color posColor = InpColorBg;
+   color posTextColor = InpColorTextDim;
+   
+   if(HasOpenPosition())
    {
       for(int i = PositionsTotal() - 1; i >= 0; i--)
       {
@@ -1156,24 +1561,161 @@ void UpdateDisplay()
          double entry = PositionGetDouble(POSITION_PRICE_OPEN);
          double lots = PositionGetDouble(POSITION_VOLUME);
          double profit = PositionGetDouble(POSITION_PROFIT);
-         
          double currentPrice = (posType == POSITION_TYPE_BUY) ? bid : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
          double profitPts = (posType == POSITION_TYPE_BUY) ? (currentPrice - entry)/_Point : (entry - currentPrice)/_Point;
          
          string typeStr = (posType == POSITION_TYPE_BUY) ? "BUY" : "SELL";
-         display += "POS: #" + IntegerToString((int)ticket) + " " + typeStr + " " + DoubleToString(lots, 2) + " lots\n";
-         display += "P&L: $" + DoubleToString(profit, 2) + " | Points: " + DoubleToString(profitPts, 0);
-         if(profitPts >= InpBreakevenTrigger) display += " [BE]";
-         if(profitPts >= InpTrailingTrigger) display += " [TRAIL]";
-         display += "\n";
+         
+         posText += typeStr + " " + DoubleToString(lots, 2) + "  |  #" + IntegerToString((int)ticket) + "\n";
+         posText += "$" + DoubleToString(profit, 2) + "  |  " + DoubleToString(profitPts, 0) + " pts";
+         
+         if(profitPts >= InpBreakevenTrigger) posText += "  BE";
+         if(profitPts >= InpTrailingTrigger) posText += "  TRAIL";
+         
+         if(profit > 0) 
+         {
+            posColor = C'40, 55, 45';
+            posTextColor = InpColorProfit;
+         }
+         else if(profit < 0) 
+         {
+            posColor = C'55, 40, 40';
+            posTextColor = InpColorLoss;
+         }
+         else 
+         {
+            posColor = InpColorBg;
+            posTextColor = InpColorText;
+         }
+         
+         break;
       }
    }
    else
    {
-      display += "POSITION: No active trades\n";
+      if(g_IsInCooldown)
+      {
+         posText = " Cooldown active\n Next trade in: " + IntegerToString(g_CooldownRemaining) + "s";
+      }
+      else if(g_IsInStartup)
+      {
+         posText = " System warming up\n Ready in: " + IntegerToString(g_StartUpRemaining) + "s";
+      }
+      else
+      {
+         posText = " No active position\n Signals: " + IntegerToString(g_SignalCheckCount);
+      }
+      posColor = InpColorBg;
+      posTextColor = InpColorTextDim;
    }
    
-   display += "========================================";
+   UpdateObject(OBJ_POSITION, posColor, posTextColor, posText);
+}
+
+void UpdateObject(string name, color bgColor, color textColor, string text)
+{
+   if(ObjectFind(0, name) >= 0)
+   {
+      ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bgColor);
+      ObjectSetInteger(0, name, OBJPROP_COLOR, textColor);
+      ObjectSetString(0, name, OBJPROP_TEXT, text);
+   }
+}
+
+void CleanupDashboard()
+{
+   ObjectsDeleteAll(0, OBJ_PREFIX);
+   Comment("");
+}
+
+void UpdateDisplay()
+{
+   if(InpEnableDashboard)
+      UpdateDashboard();
+   else
+      UpdateTextDisplay();
+}
+
+// Fallback text display with countdown
+void UpdateTextDisplay()
+{
+   if(!InpShowSessionInfo && !InpShowPositionInfo) return;
+   
+   datetime now = TimeCurrent();
+   if(now - g_LastStatusUpdate < InpStatusUpdateSec) return;
+   g_LastStatusUpdate = now;
+   
+   // Update countdown trackers
+   int startupRemaining = 0;
+   IsStartupDelayComplete(startupRemaining);
+   
+   if(!IsCooldownComplete())
+   {
+      // Already updated in function
+   }
+   
+   UpdateSessionStatus();
+   
+   string display = "";
+   display += "----------------------------------------\n";
+   display += InpStrategyName + "  |  " + g_CurrentSession + "\n";
+   display += "----------------------------------------\n";
+   
+   // Countdown priority
+   if(g_IsInStartup)
+   {
+      int mins = g_StartUpRemaining / 60;
+      int secs = g_StartUpRemaining % 60;
+      display += ">> STARTUP: " + (mins > 0 ? IntegerToString(mins) + "m " : "") + IntegerToString(secs) + "s remaining\n";
+      display += "----------------------------------------\n";
+   }
+   else if(g_IsInCooldown)
+   {
+      int mins = g_CooldownRemaining / 60;
+      int secs = g_CooldownRemaining % 60;
+      display += ">> COOLDOWN: " + (mins > 0 ? IntegerToString(mins) + "m " : "") + IntegerToString(secs) + "s remaining\n";
+      display += "----------------------------------------\n";
+   }
+   
+   display += "Status: " + g_SessionStatus + "  |  Trading: " + (g_IsTradingAllowed ? "ON" : "OFF") + "\n";
+   
+   int spread = (int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   display += "Price: " + DoubleToString(bid, _Digits) + "  Spread: " + IntegerToString(spread) + "\n";
+   
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   display += "Balance: $" + DoubleToString(balance, 2) + "  Equity: $" + DoubleToString(equity, 2) + "\n";
+   
+   UpdateDailyStatistics();
+   display += "Today: " + IntegerToString(g_DailyWinCount) + "W/" + 
+              IntegerToString(g_DailyLossCount) + "L  P&L: $" + DoubleToString(g_DailyProfit, 2) + "\n";
+   
+   bool hasPosition = HasOpenPosition();
+   if(hasPosition)
+   {
+      for(int i = PositionsTotal() - 1; i >= 0; i--)
+      {
+         ulong ticket = PositionGetTicket(i);
+         if(ticket == 0) continue;
+         if(!PositionSelectByTicket(ticket)) continue;
+         if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+         if((long)PositionGetInteger(POSITION_MAGIC) != InpMagicNumber) continue;
+         
+         ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+         double lots = PositionGetDouble(POSITION_VOLUME);
+         double profit = PositionGetDouble(POSITION_PROFIT);
+         
+         display += "Pos: " + (posType == POSITION_TYPE_BUY ? "BUY" : "SELL") + " " + 
+                    DoubleToString(lots, 2) + "  P&L: $" + DoubleToString(profit, 2) + "\n";
+      }
+   }
+   else
+   {
+      display += "No position | Checks: " + IntegerToString(g_SignalCheckCount) + "\n";
+   }
+   
+   display += "----------------------------------------";
    
    Comment(display);
 }
@@ -1217,12 +1759,17 @@ int OnInit()
    g_DailyWinCount = 0;
    g_DailyLossCount = 0;
    g_SignalCheckCount = 0;
+   g_IsInStartup = false;
+   g_IsInCooldown = false;
+
+   // Create Dashboard Objects
+   CreateDashboardObjects();
 
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    
    // Print initialization info
    Print("========================================");
-   Print("   ", InpStrategyName, " v5.00 INITIALIZED");
+   Print("   ", InpStrategyName, " v5.10 INITIALIZED");
    Print("========================================");
    Print("Account Balance: $", DoubleToString(balance, 2));
    Print("Base Lot Size: ", InpBaseLotSize, " (Max: ", InpMaxLotSize, ")");
@@ -1233,12 +1780,7 @@ int OnInit()
       Print("Startup Delay: ", InpStartupDelaySec, " seconds");
    else
       Print("Startup Delay: DISABLED");
-   Print("========================================");
-   Print("SESSIONS:");
-   Print("   Pre-London:  ", InpTradePreLondonSession ? "ON" : "OFF");
-   Print("   London:      ", InpTradeLondonSession ? "ON" : "OFF");
-   Print("   London-NY:   ", InpTradeLondonNYOverlap ? "ON" : "OFF");
-   Print("   New York:    ", InpTradeNewYorkSession ? "ON" : "OFF");
+   Print("Dashboard: ", InpEnableDashboard ? "ENABLED (Countdown)" : "DISABLED");
    Print("========================================");
 
    return(INIT_SUCCEEDED);
@@ -1255,7 +1797,7 @@ void OnDeinit(const int reason)
    if(g_HandleADX != INVALID_HANDLE) IndicatorRelease(g_HandleADX);
 
    UpdateDailyStatistics();
-   Comment("");
+   CleanupDashboard();
    
    Print(InpStrategyName, " deinitialized");
    Print("Final Balance: $", DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE), 2));
@@ -1265,7 +1807,7 @@ void OnTick()
 {
    if(!IsSymbolGold(_Symbol)) return;
 
-   // Always update display
+   // Always update display (for countdowns)
    UpdateDisplay();
 
    // Manage existing positions
